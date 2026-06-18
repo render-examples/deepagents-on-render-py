@@ -10,12 +10,11 @@
 <div class="shell">
 
   <h1>{{TITLE}}</h1>
-  <p class="sub">Submit a diff for multi-agent code review. Trace every LLM and tool call below.</p>
+  <p class="sub">Paste a public GitHub PR link to run a multi-agent code review.</p>
 
   <form id="run">
-    <textarea id="diff" rows="4" placeholder="Paste a unified diff here..."></textarea>
-    <div class="form-row" style="margin-top:8px">
-      <input type="text" id="repo" placeholder="repo (e.g. owner/repo)">
+    <div class="form-row">
+      <input type="url" id="pr-url" placeholder="https://github.com/owner/repo/pull/123" autocomplete="url">
       <button type="submit" id="go">Review</button>
       <button type="button" id="refresh" class="secondary">Refresh</button>
     </div>
@@ -40,8 +39,7 @@
 <script>
 const rows = document.getElementById('rows')
 const form = document.getElementById('run')
-const diffEl = document.getElementById('diff')
-const repoEl = document.getElementById('repo')
+const prUrlEl = document.getElementById('pr-url')
 const go = document.getElementById('go')
 const refreshBtn = document.getElementById('refresh')
 const submitStatus = document.getElementById('submit-status')
@@ -175,7 +173,7 @@ async function load(opts = {}) {
   try {
     const list = await apiFetch('/api/traces').then(r => r.json())
     rows.innerHTML = list.length
-      ? '' : '<tr><td colspan="4" class="muted">No traces yet. Submit a diff above.</td></tr>'
+      ? '' : '<tr><td colspan="4" class="muted">No traces yet. Paste a PR URL above to start.</td></tr>'
     for (const t of list) {
       const tr = document.createElement('tr')
       tr.className = 'trace'
@@ -202,19 +200,24 @@ function setStatus(msg, state) {
 
 form.onsubmit = async (e) => {
   e.preventDefault()
-  const diff = diffEl.value.trim()
-  if (!diff) { setStatus('Paste a diff first.', 'error'); return }
+  const prUrl = prUrlEl.value.trim()
+  if (!prUrl) { setStatus('Paste a PR URL first.', 'error'); return }
+  if (!/^https?:\/\/github\.com\/.+\/pull\/\d+/.test(prUrl)) {
+    setStatus('Enter a valid GitHub PR URL (e.g. https://github.com/owner/repo/pull/123).', 'error')
+    return
+  }
   go.disabled = true
-  go.textContent = 'Reviewing...'
+  go.textContent = 'Fetching PR...'
   setStatus('', '')
   try {
-    const res = await apiFetch('/reviews', {
+    const res = await apiFetch('/reviews/pr', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ diff, repo: repoEl.value || 'unknown' }),
+      body: JSON.stringify({ pr_url: prUrl }),
     })
     if (!res.ok) throw new Error(await res.text())
-    diffEl.value = ''
+    prUrlEl.value = ''
+    setStatus('Review submitted — traces will appear below.', '')
     await load({ silent: true })
   } catch (err) {
     setStatus('Review failed: ' + err.message, 'error')
