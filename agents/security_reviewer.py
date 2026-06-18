@@ -3,8 +3,9 @@ Security reviewer agent — scans a PR diff for vulnerabilities,
 credential leaks, unsafe patterns, and suspicious dependencies.
 """
 
-from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
+
+from agents.llm import get_llm
 
 from agents.tools.git import parse_diff, list_changed_files, get_file_diff
 from agents.tools.code_analysis import detect_language, find_patterns, check_imports
@@ -26,7 +27,7 @@ If you find no issues, say so explicitly. Do not invent problems.
 
 def create_security_reviewer():
     """Return a compiled security reviewer agent graph."""
-    llm = ChatOpenAI(model="gpt-4o")
+    llm = get_llm()
     return create_react_agent(
         model=llm,
         tools=[

@@ -3,8 +3,9 @@ Style reviewer agent — checks naming conventions, code structure,
 and readability. Does not flag formatting issues (that's a linter's job).
 """
 
-from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
+
+from agents.llm import get_llm
 
 from agents.tools.git import parse_diff, list_changed_files, get_file_diff
 from agents.tools.code_analysis import detect_language, extract_functions
@@ -29,7 +30,7 @@ code quality.
 
 def create_style_reviewer():
     """Return a compiled style reviewer agent graph."""
-    llm = ChatOpenAI(model="gpt-4o")
+    llm = get_llm()
     return create_react_agent(
         model=llm,
         tools=[

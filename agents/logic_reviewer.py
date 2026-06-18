@@ -3,8 +3,9 @@ Logic reviewer agent — catches bugs, off-by-one errors, missing
 edge cases, and incorrect control flow in a PR diff.
 """
 
-from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
+
+from agents.llm import get_llm
 
 from agents.tools.git import parse_diff, list_changed_files, get_file_diff
 from agents.tools.code_analysis import detect_language, extract_functions
@@ -28,7 +29,7 @@ go wrong. If the logic is correct, say so.
 
 def create_logic_reviewer():
     """Return a compiled logic reviewer agent graph."""
-    llm = ChatOpenAI(model="gpt-4o")
+    llm = get_llm()
     return create_react_agent(
         model=llm,
         tools=[

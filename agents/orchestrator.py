@@ -11,8 +11,9 @@ them concurrently — giving us parallel fan-out.
 import json
 
 from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
+
+from agents.llm import get_llm
 
 
 SYSTEM_PROMPT = """\
@@ -79,7 +80,7 @@ async def summarize_reviews(reviews_json: str) -> str:
 
 def create_orchestrator():
     """Return a compiled orchestrator agent graph."""
-    llm = ChatOpenAI(model="gpt-4o")
+    llm = get_llm()
     return create_react_agent(
         model=llm,
         tools=[

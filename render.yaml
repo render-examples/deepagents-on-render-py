@@ -24,6 +24,8 @@ services:
           property: connectionString
       - key: OPENAI_API_KEY
         sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
       - key: RENDER_API_KEY
         sync: false
       - key: REVIEW_API_KEY

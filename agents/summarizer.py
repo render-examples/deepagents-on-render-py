@@ -4,8 +4,9 @@ into a single structured report. Runs in-process (no Render Workflow
 task) since it's a lightweight synthesis step with no tools.
 """
 
-from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
+
+from agents.llm import get_llm
 
 from models import ReviewReport
 
@@ -32,7 +33,7 @@ def create_summarizer():
     the pipeline returns a validated, structured report rather than free
     text. The structured result is available as ``structured_response``.
     """
-    llm = ChatOpenAI(model="gpt-4o")
+    llm = get_llm()
     return create_react_agent(
         model=llm,
         tools=[],
