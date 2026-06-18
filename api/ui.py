@@ -6,10 +6,11 @@ import html
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import HTMLResponse, Response
 from sqlalchemy import select
 
+from api.security import require_api_key
 from db.models import SessionLocal, Trace, Span
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -33,14 +34,16 @@ def create_ui_router(title: str = "Code Review Pipeline") -> APIRouter:
         content = (STATIC_DIR / "styles.css").read_text()
         return Response(content=content, media_type="text/css; charset=utf-8")
 
-    @router.get("/api/traces")
+    @router.get("/api/traces", dependencies=[Depends(require_api_key)])
     async def list_traces():
         with SessionLocal() as session:
             stmt = select(Trace).order_by(Trace.started_at.desc()).limit(50)
             traces = session.scalars(stmt).all()
             return [_trace_dict(t) for t in traces]
 
-    @router.get("/api/traces/{trace_id}/spans")
+    @router.get(
+        "/api/traces/{trace_id}/spans", dependencies=[Depends(require_api_key)]
+    )
     async def get_spans(trace_id: UUID):
         with SessionLocal() as session:
             stmt = (

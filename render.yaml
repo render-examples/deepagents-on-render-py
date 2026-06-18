@@ -1,0 +1,37 @@
+# ──────────────────────────────────────────────────────────────
+# Render Blueprint — Code Review Multi-Agent Pipeline
+#
+# Creates the FastAPI web service and Postgres database.
+#
+# NOTE: Render Blueprints do not yet support Workflows.
+# Create your Workflow service separately via the Dashboard:
+#   New > Workflow > link this repo
+#   Build command:  pip install -r requirements.txt
+#   Start command:  python workflows/main.py
+#   Runtime:        Python 3
+#   Set OPENAI_API_KEY and DATABASE_URL env vars on the Workflow.
+# ──────────────────────────────────────────────────────────────
+
+services:
+  - type: web
+    name: code-review-api
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api.app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: code-review-db
+          property: connectionString
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: RENDER_API_KEY
+        sync: false
+      - key: PYTHON_VERSION
+        value: "3.12.3"
+
+databases:
+  - name: code-review-db
+    plan: starter

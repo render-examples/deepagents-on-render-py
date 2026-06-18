@@ -7,6 +7,11 @@ from pathlib import PurePosixPath
 
 from langchain.tools import tool
 
+# Cap the amount of code any single regex scan processes. Tool inputs are
+# supplied by the LLM from an untrusted diff, so bounding the size keeps
+# regex matching from becoming a denial-of-service vector.
+_MAX_CODE_CHARS = 200_000
+
 EXTENSION_TO_LANGUAGE: dict[str, str] = {
     ".py": "python",
     ".js": "javascript",
@@ -59,7 +64,8 @@ _FUNCTION_PATTERNS: dict[str, re.Pattern[str]] = {
         r"^[ \t]*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)", re.MULTILINE
     ),
     "java": re.compile(
-        r"(?:public|private|protected|static|\s)+[\w<>\[\]]+\s+(\w+)\s*\(",
+        r"^[ \t]*(?:public|private|protected)\s+"
+        r"(?:static\s+)?(?:final\s+)?[\w<>\[\].]+\s+(\w+)\s*\(",
         re.MULTILINE,
     ),
     "ruby": re.compile(r"^\s*def\s+(\w+)", re.MULTILINE),
@@ -117,6 +123,7 @@ def extract_functions(code: str, language: str) -> list[dict]:
     if pattern is None:
         return []
 
+    code = code[:_MAX_CODE_CHARS]
     results: list[dict] = []
     for match in pattern.finditer(code):
         name = next((g for g in match.groups() if g is not None), None)
@@ -140,6 +147,7 @@ def find_patterns(code: str, file_path: str) -> list[dict]:
     suffix = PurePosixPath(file_path).suffix.lower()
     language = EXTENSION_TO_LANGUAGE.get(suffix, "unknown")
 
+    code = code[:_MAX_CODE_CHARS]
     patterns = DANGEROUS_PATTERNS.get("_common", [])[:]
     patterns.extend(DANGEROUS_PATTERNS.get(language, []))
 
@@ -165,7 +173,7 @@ def check_imports(code: str, language: str) -> list[dict]:
     Supports python, javascript, and typescript.
     """
     results: list[dict] = []
-    lines = code.splitlines()
+    lines = code[:_MAX_CODE_CHARS].splitlines()
 
     if language == "python":
         import_re = re.compile(

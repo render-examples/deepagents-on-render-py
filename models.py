@@ -7,6 +7,10 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+# Upper bound on a submitted diff (~256 KB). Large enough for real PRs,
+# small enough to cap LLM token spend and request memory.
+MAX_DIFF_CHARS = 256_000
+
 
 class Severity(str, Enum):
     critical = "critical"
@@ -22,10 +26,14 @@ class Assessment(str, Enum):
 
 
 class ReviewRequest(BaseModel):
-    """Input to POST /reviews."""
+    """Input to POST /reviews.
 
-    diff: str
-    repo: str
+    `diff` is bounded to keep a single request from pushing an
+    unbounded payload into the LLM (latency, memory, and cost).
+    """
+
+    diff: str = Field(min_length=1, max_length=MAX_DIFF_CHARS)
+    repo: str = Field(min_length=1, max_length=200)
     context: dict = Field(default_factory=dict)
 
 

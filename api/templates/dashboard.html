@@ -53,6 +53,27 @@ const ACTIVE_REFRESH_MS = 2000
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]))
 
+const API_KEY_STORE = 'reviewApiKey'
+const authHeaders = (extra = {}) => {
+  const key = localStorage.getItem(API_KEY_STORE)
+  return key ? { ...extra, 'x-api-key': key } : extra
+}
+
+// Fetch wrapper that prompts for an API key on 401 and retries once,
+// so an authenticated deployment stays usable without code changes.
+async function apiFetch(url, options = {}, retried = false) {
+  const opts = { ...options, headers: authHeaders(options.headers || {}) }
+  const res = await fetch(url, opts)
+  if (res.status === 401 && !retried) {
+    const key = prompt('This API requires a key. Enter your API key:')
+    if (key) {
+      localStorage.setItem(API_KEY_STORE, key)
+      return apiFetch(url, options, true)
+    }
+  }
+  return res
+}
+
 const fmtJson = (v) => {
   if (v === null || v === undefined) return ''
   if (typeof v === 'string') return v
@@ -112,7 +133,7 @@ async function toggle(id, tr, force) {
   })
   openId = id
 
-  const spans = await fetch('/api/traces/' + id + '/spans').then(r => r.json())
+  const spans = await apiFetch('/api/traces/' + id + '/spans').then(r => r.json())
   const detail = existing && existing.classList.contains('detail')
     ? existing : document.createElement('tr')
   detail.className = 'detail'
@@ -152,7 +173,7 @@ async function load(opts = {}) {
   refreshBtn.disabled = true
   const scrollY = opts.preserveScroll ? window.scrollY : null
   try {
-    const list = await fetch('/api/traces').then(r => r.json())
+    const list = await apiFetch('/api/traces').then(r => r.json())
     rows.innerHTML = list.length
       ? '' : '<tr><td colspan="4" class="muted">No traces yet. Submit a diff above.</td></tr>'
     for (const t of list) {
@@ -187,7 +208,7 @@ form.onsubmit = async (e) => {
   go.textContent = 'Reviewing...'
   setStatus('', '')
   try {
-    const res = await fetch('/reviews', {
+    const res = await apiFetch('/reviews', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ diff, repo: repoEl.value || 'unknown' }),

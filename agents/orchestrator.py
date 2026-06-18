@@ -32,7 +32,7 @@ You are a code review orchestrator. Given a PR diff, you:
 @tool
 async def run_security_review(diff: str) -> str:
     """Dispatch a security review on dedicated compute via Render Workflows."""
-    from render import RenderAsync
+    from render_sdk import RenderAsync
 
     render = RenderAsync()
     result = await render.workflows.run_task("code-review/security_review", [diff])
@@ -42,7 +42,7 @@ async def run_security_review(diff: str) -> str:
 @tool
 async def run_style_review(diff: str) -> str:
     """Dispatch a style review on dedicated compute via Render Workflows."""
-    from render import RenderAsync
+    from render_sdk import RenderAsync
 
     render = RenderAsync()
     result = await render.workflows.run_task("code-review/style_review", [diff])
@@ -52,7 +52,7 @@ async def run_style_review(diff: str) -> str:
 @tool
 async def run_logic_review(diff: str) -> str:
     """Dispatch a logic review on dedicated compute via Render Workflows."""
-    from render import RenderAsync
+    from render_sdk import RenderAsync
 
     render = RenderAsync()
     result = await render.workflows.run_task("code-review/logic_review", [diff])
@@ -61,13 +61,19 @@ async def run_logic_review(diff: str) -> str:
 
 @tool
 async def summarize_reviews(reviews_json: str) -> str:
-    """Summarize collected review results into a final report. Runs in-process."""
+    """Summarize collected review results into a final report. Runs in-process.
+
+    Returns a JSON-serialized ``ReviewReport``.
+    """
     from agents.summarizer import create_summarizer
 
     summarizer = create_summarizer()
     result = await summarizer.ainvoke(
         {"messages": [{"role": "user", "content": reviews_json}]}
     )
+    report = result.get("structured_response")
+    if report is not None:
+        return report.model_dump_json()
     return result["messages"][-1].content
 
 
