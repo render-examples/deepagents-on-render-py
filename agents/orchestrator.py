@@ -5,8 +5,7 @@ reviewer agents via Render Workflow tasks.
 The orchestrator is itself a LangChain agent. Its tools dispatch
 sub-agents on dedicated Render Workflow instances. When the LLM
 returns multiple tool calls in one response, LangGraph executes
-them concurrently — giving us parallel fan-out with no manual
-asyncio.gather.
+them concurrently — giving us parallel fan-out.
 """
 
 import json

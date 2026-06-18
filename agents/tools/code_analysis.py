@@ -41,7 +41,7 @@ EXTENSION_TO_LANGUAGE: dict[str, str] = {
 
 _FUNCTION_PATTERNS: dict[str, re.Pattern[str]] = {
     "python": re.compile(
-        r"^[ \t]*(async\s+)?def\s+(\w+)\s*\(", re.MULTILINE
+        r"^[ \t]*(?:async\s+)?def\s+(\w+)\s*\(", re.MULTILINE
     ),
     "javascript": re.compile(
         r"(?:^|\s)(?:async\s+)?function\s+(\w+)\s*\(|"
