@@ -1,119 +1,105 @@
-# Code Review Pipeline — LangChain + Render Workflows
+# Deep Agents on Render (Python)
 
-A multi-agent code review pipeline built on **FastAPI**, **LangChain / LangGraph**, and **Render Workflows**, with every agent step traced to **Postgres** and surfaced in a live dashboard.
+A production scaffold for running [LangChain **Deep Agents**](https://docs.langchain.com/oss/python/deepagents/overview) on Render, with the two things Deep Agents doesn't give you out of the box:
 
-You `POST` a unified diff; an orchestrator agent decides which reviewers to run, fans them out as isolated Render Workflow tasks, and returns a structured `ReviewReport`.
+- **Durable state** — every step of every run is checkpointed to **Render Postgres** via LangGraph's `AsyncPostgresSaver`. Runs survive restarts and work across replicas.
+- **Distributed execution** — when the orchestrator spawns a subagent (the built-in `task` tool), it runs as its own **Render Workflow** task — dedicated compute, retries, timeout, and plan — instead of in-process.
 
-## Overview
+It also wires up **human-in-the-loop**: the agent pauses for approval before publishing, holds its state in Postgres, and resumes on a later request — even if the process restarted in between.
+
+> **The example domain is not the point.** It's a small *research report generator* (an orchestrator + a `research-agent` + an `editor-agent`) that exists only to prove the scaffold works. Replace the agents in `agents/` with your own; you shouldn't need to touch the infrastructure code.
+
+## How it works
 
 ```
-POST /reviews {diff, repo, context}
+POST /run/research {topic}
   → FastAPI validates input + checks API key
-    → dispatches "code-review/orchestrate_review" on Render Workflows
-      → Orchestrator agent (gpt-4o) analyzes the diff and decides scope
-        → run_security_review  → security_review task  (own instance)
-        → run_style_review     → style_review task     (own instance)
-        → run_logic_review     → logic_review task      (own instance)
-        → summarize_reviews    → summarizer agent       (in-process)
-      → returns a structured ReviewReport (JSON)
-  → every LLM + tool call written to Postgres via TracingCallbackHandler
-  → dashboard at "/" renders traces and spans live
+    → Orchestrator deep agent (Postgres checkpointer, thread_id)
+        → task(research-agent)  ─┐
+        → task(research-agent)   ├─ each dispatched as a Render Workflow task
+        → task(editor-agent)    ─┘   (its own instance / retries / plan)
+        → publish_report(...)    ── human-in-the-loop interrupt ──► pauses
+  → returns {status: "interrupted", action_requests: [...]}
+
+POST /resume/{thread_id} {decisions: [{type: "approve"}]}
+  → resumes from the Postgres checkpoint, runs publish_report
+  → report persisted to Postgres; returns {status: "completed", report}
 ```
 
-Key properties:
-
-- **Agents are pure LangChain** — each reviewer is a factory returning a compiled `create_react_agent` graph with no Render dependency, so they're unit-testable with plain `pytest`.
-- **Dual-mode execution** — the same agent runs in-process (summarizer) or as a distributed Render Workflow task (reviewers) for isolated, retryable, parallel compute.
-- **The orchestrator is itself an agent** — it chooses which reviewers to dispatch based on diff content, rather than running a static DAG.
-- **Observability built in** — `TracingCallbackHandler` records one `Trace` per run and one `Span` per LLM/tool call.
-- **Secure by default in production** — `POST /reviews` and the trace APIs require an API key when `REVIEW_API_KEY` is set; diff size is bounded; agent tools are pure string/regex (no shell, filesystem, or git binary).
+The integration hook is small and lives in one file: [`dispatch/workflow_subagent.py`](dispatch/workflow_subagent.py) registers each subagent as a `CompiledSubAgent` whose runnable dispatches to `RenderAsync().workflows.run_task(...)`. When `RENDER_API_KEY` is not set (local dev, tests), it transparently falls back to running the subagent in-process — so the same graph runs end-to-end with zero infrastructure.
 
 ## Repository structure
 
 ```
-langchain-workflows/
+deepagents-on-render-py/
 ├── agents/                     # Pure LangChain — no Render dependency
-│   ├── orchestrator.py         # Orchestrator agent + dispatch tools
-│   ├── security_reviewer.py    # Security review agent factory
-│   ├── style_reviewer.py       # Style/readability review agent factory
-│   ├── logic_reviewer.py       # Logic/correctness review agent factory
-│   ├── summarizer.py           # Summarizer agent (structured ReviewReport output)
-│   └── tools/
-│       ├── git.py              # In-memory unified-diff parsing tools
-│       └── code_analysis.py    # Regex static-analysis tools (lang, patterns, imports)
-├── workflows/                  # Render Workflows — task wrappers
-│   ├── code_review/
-│   │   ├── __init__.py         # Exports the Workflows app
-│   │   └── tasks.py            # @app.task wrappers; wires in tracing
+│   ├── model.py                # Provider selection (Anthropic / OpenAI)
+│   ├── subagents.py            # Subagent specs + in-process runner (reused by Workflows)
+│   ├── orchestrator.py         # create_deep_agent: subagents + interrupt_on + checkpointer
+│   └── tools.py                # publish_report (the human-in-the-loop gated tool)
+├── dispatch/
+│   └── workflow_subagent.py    # CompiledSubAgent that routes task() → Render Workflows
+├── checkpoint/
+│   └── postgres.py             # Sized connection pool + AsyncPostgresSaver
+├── db/
+│   └── reports.py              # Published-report persistence (shares the pool)
+├── api/
+│   ├── app.py                  # FastAPI app + lifespan (pool → checkpointer → agent)
+│   ├── security.py             # API-key auth (X-API-Key)
+│   └── routes/runs.py          # /run, /resume, /runs, /reports
+├── workflows/                  # Render Workflows — one task per subagent
+│   ├── research/tasks.py       # @app.task research_agent, editor_agent
 │   └── main.py                 # Workflows.from_workflows(...) + app.start()
-├── api/                        # FastAPI trigger layer + dashboard
-│   ├── app.py                  # App factory, lifespan (init_db), /health
-│   ├── security.py             # require_api_key dependency (REVIEW_API_KEY)
-│   ├── ui.py                   # Dashboard router + trace JSON APIs
-│   ├── routes/reviews.py       # POST /reviews
-│   ├── templates/dashboard.html
-│   └── static/styles.css
-├── db/                         # Postgres
-│   ├── models.py               # SQLAlchemy Trace/Span models, engine, init_db
-│   └── traces.py               # TracingCallbackHandler (LangChain callback)
-├── models.py                   # Shared Pydantic models (ReviewRequest, ReviewReport, ...)
-├── tests/                      # pytest suite for tools + models
-├── requirements.txt
-├── Dockerfile
-├── docker-compose.yml          # Local API + Postgres
-├── render.yaml                 # Blueprint for the web service + database
-└── .env.example                # Documented environment variables
+├── models.py                   # Pydantic request/response contract
+├── tests/                      # pytest suite (dispatch + API mapping)
+├── render.yaml                 # Blueprint: web service + Postgres
+├── Dockerfile / docker-compose.yml
+└── .env.example
 ```
-
-### Key files
-
-| File | Responsibility |
-|------|----------------|
-| `api/routes/reviews.py` | Validates `ReviewRequest`, enforces auth, dispatches the orchestrator task. |
-| `workflows/code_review/tasks.py` | Registers each agent as a Render task and attaches `TracingCallbackHandler`. |
-| `agents/orchestrator.py` | The agent + tools that fan out reviewers and call the summarizer. |
-| `db/traces.py` | Persists traces/spans for the dashboard. |
-| `models.py` | The request/response contract (`ReviewReport` is the structured output). |
 
 ## Configuration
 
-Copy `.env.example` to `.env` and fill in values.
+Copy `.env.example` to `.env` and fill in values. See that file for the full list; the essentials:
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
-| `OPENAI_API_KEY` | Yes | Used by `ChatOpenAI` for all agents. |
-| `DATABASE_URL` | Yes (prod) | Postgres connection string. Defaults to `postgresql://localhost:5432/langchain_workflows`. |
-| `RENDER_API_KEY` | Yes (prod) | Lets the API and orchestrator trigger Render Workflow tasks. |
-| `REVIEW_API_KEY` | Recommended | When set, `POST /reviews` and the trace APIs require it via `X-API-Key`. If unset, the API is open and logs a warning. |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | One of them | Model provider. Anthropic wins if both set (override with `LLM_PROVIDER`). |
+| `DATABASE_URL` | Yes | Postgres for the checkpointer + report store. Injected by Render in prod. |
+| `DB_POOL_MAX_SIZE` | Recommended | Pool size — set to your Postgres plan's connection limit / number of instances. |
+| `RENDER_API_KEY` | Prod | Enables Workflow dispatch. When unset, subagents run in-process. |
+| `WORKFLOW_NAME` | Prod | Name of your Dashboard Workflow; tasks are addressed as `<WORKFLOW_NAME>/research_agent`. |
+| `API_KEY` | Recommended | When set, all endpoints require it via `X-API-Key`. |
 
-## Quickstart
-
-### Local (Python)
+## Quickstart (local)
 
 Requires Python 3.11+ and a running Postgres.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env            # then edit values
+cp .env.example .env            # set ANTHROPIC_API_KEY or OPENAI_API_KEY + DATABASE_URL
 
-# Terminal 1 — FastAPI trigger layer + dashboard
 export $(grep -v '^#' .env | xargs)
 uvicorn api.app:app --reload --port 8000
-
-# Terminal 2 — Render Workflows worker (registers + runs tasks)
-export $(grep -v '^#' .env | xargs)
-python -m workflows.main
 ```
 
-Open http://localhost:8000 for the dashboard, or call the API directly:
+With `RENDER_API_KEY` unset, subagents run in-process — no Workflows worker needed. Trigger a run:
 
 ```bash
-curl -X POST http://localhost:8000/reviews \
-  -H "content-type: application/json" \
-  -H "x-api-key: $REVIEW_API_KEY" \
-  -d '{"diff": "diff --git a/x.py b/x.py\n...", "repo": "owner/repo"}'
+# 1. Start a run — it pauses for approval before publishing.
+curl -X POST http://localhost:8000/run/research \
+  -H 'content-type: application/json' -H "x-api-key: $API_KEY" \
+  -d '{"topic": "the state of solid-state batteries"}'
+# → {"thread_id": "...", "status": "interrupted", "action_requests": [{"name": "publish_report", ...}]}
+
+# 2. Approve it — resumes from the checkpoint and publishes.
+curl -X POST http://localhost:8000/resume/<thread_id> \
+  -H 'content-type: application/json' -H "x-api-key: $API_KEY" \
+  -d '{"decisions": [{"type": "approve"}]}'
+# → {"thread_id": "...", "status": "completed", "report": {...}}
 ```
+
+To verify durability (R3): stop the server after step 1 and start it again before step 2 — `/resume` still works, because the interrupted state lives in Postgres.
 
 Run the tests:
 
@@ -123,46 +109,59 @@ pytest
 
 ### Docker
 
-`docker-compose.yml` brings up the API and a Postgres instance together. Set `OPENAI_API_KEY` (and optionally `RENDER_API_KEY`, `REVIEW_API_KEY`) in your shell or a `.env` file first.
+`docker-compose.yml` brings up the API + Postgres together (subagents in-process):
 
 ```bash
-cp .env.example .env            # then edit values
-docker compose up --build
+cp .env.example .env            # set a model key
+docker compose up --build       # API at http://localhost:8000
 ```
 
-- API + dashboard: http://localhost:8000
-- Postgres: `localhost:5432` (`postgres` / `postgres`)
-
-The Render Workflows worker (`python -m workflows.main`) is intentionally **not** containerized here — Workflows run on Render's managed infrastructure (see below). For fully local end-to-end runs, run the worker on the host as in the Local quickstart, pointing it at the same `DATABASE_URL`.
-
-### Render deploy
+## Deploy to Render
 
 Render Workflows and the web service deploy through two complementary mechanisms.
 
-#### 1. Web service + database (Blueprint)
+### 1. Web service + database (Blueprint)
 
-`render.yaml` provisions the FastAPI service and a managed Postgres database. From the [Render Dashboard](https://dashboard.render.com): **New → Blueprint**, point it at this repo, and Render syncs `render.yaml`. You'll be prompted for the `sync: false` secrets (`OPENAI_API_KEY`, `RENDER_API_KEY`, `REVIEW_API_KEY`); `DATABASE_URL` is wired automatically.
+`render.yaml` provisions the FastAPI service and a managed Postgres database. In the [Render Dashboard](https://dashboard.render.com): **New → Blueprint**, point it at this repo, and Render syncs `render.yaml`. You'll be prompted for the `sync: false` secrets (`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`, `RENDER_API_KEY`, `API_KEY`); `DATABASE_URL` is wired automatically.
 
-#### 2. Workflows service (Dashboard)
+### 2. Workflows service (Dashboard)
 
-> Render Workflows are **not yet supported in Blueprints** — they must be created from the Dashboard.
+> Render Workflows are **not yet supported in Blueprints** — create the Workflow from the Dashboard.
 
 In the Dashboard: **New → Workflow**, link this repo, then configure:
 
 | Field | Value |
 |-------|-------|
+| Name | `deep-agents` *(must match `WORKFLOW_NAME`)* |
 | Language | Python 3 |
-| Root Directory | *(repo root — leave blank)* |
 | Build Command | `pip install -r requirements.txt` |
 | Start Command | `python -m workflows.main` |
 
-Add the same environment variables (`OPENAI_API_KEY`, `DATABASE_URL`, `RENDER_API_KEY`) so reviewer tasks can call the LLM, write traces, and chain sub-tasks. Click **Deploy Workflow** — Render registers `orchestrate_review`, `security_review`, `style_review`, and `logic_review` during the build.
+Add the same model key and `DATABASE_URL`. Click **Deploy Workflow** — Render registers `research_agent` and `editor_agent` during the build. Once both services are live, set `RENDER_API_KEY` on the web service so the orchestrator dispatches subagents to `deep-agents/research_agent` and `deep-agents/editor_agent`.
 
-Once both are live, the web service triggers `code-review/orchestrate_review` on the Workflows service via the Render SDK.
+**Pool sizing (R4):** set `DB_POOL_MAX_SIZE` so that `web instances + workflow instances` × `DB_POOL_MAX_SIZE` stays under your Postgres plan's connection limit.
 
-## How it fits together
+## Add your own agent
 
-- **Triggering** — `RenderAsync().workflows.run_task("code-review/orchestrate_review", [diff, repo, context])` from the API and orchestrator tools.
-- **Tracing** — every task wraps its agent invocation with `TracingCallbackHandler`, so traces appear identically whether the agent runs in-process or on a Workflow instance.
-- **Structured output** — the summarizer binds `response_format=ReviewReport`, so the pipeline returns a validated report rather than free text.
-```
+This scaffold is designed so you replace the example agents without touching infrastructure:
+
+1. **Define a subagent** in `agents/subagents.py` — a `SubAgentSpec` with a name, description, system prompt, and optional tools.
+2. **Register it** in `agents/orchestrator.py`: add `workflow_subagent(MY_AGENT)` to the `subagents=[...]` list and mention it in the system prompt.
+3. **Expose it as a Workflow task** in `workflows/research/tasks.py` (or a new `workflows/<domain>/`): a one-line `@app.task` that calls `run_subagent_sync(MY_AGENT, task)`. The task function name must match the subagent name with underscores (`my-agent` → `my_agent`).
+4. **Customize the gate** (optional): change `interrupt_on` in `agents/orchestrator.py` to pause on whichever tools you want a human to approve.
+
+Everything else — checkpointing, pooling, dispatch, the API, auth — stays the same.
+
+## How the requirements are met
+
+| # | Requirement | Where |
+|---|-------------|-------|
+| R1 | Postgres checkpointing via `AsyncPostgresSaver` from `DATABASE_URL` | `checkpoint/postgres.py`, `api/app.py` |
+| R2 | Subagent dispatch via Render Workflows, not in-process | `dispatch/workflow_subagent.py`, `workflows/research/tasks.py` |
+| R3 | Human-in-the-loop with `interrupt_on`; state in Postgres; resume after restart | `agents/orchestrator.py`, `api/routes/runs.py` |
+| R4 | Connection pooling sized to the plan | `checkpoint/postgres.py` (`DB_POOL_MAX_SIZE`) |
+| R5 | `render.yaml` provisions web + Postgres (Workflows via Dashboard) | `render.yaml` |
+| R6 | 1 orchestrator + 2 subagents; `POST /run/{agent}` returns a structured result | `agents/`, `api/routes/runs.py`, `models.py` |
+| R7 | Fork-and-customize without touching infra | `agents/` + "Add your own agent" above |
+| R8 | `.env.example` documents all variables | `.env.example` |
+| R9 | README: local dev, Render deploy, add-your-own-agent | this file |

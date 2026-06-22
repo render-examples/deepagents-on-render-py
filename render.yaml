@@ -2,16 +2,17 @@
 #
 # NOTE: Render Workflows are not yet supported in Blueprints. Create the
 # Workflow service from the Dashboard (New > Workflow) with start command
-# `python -m workflows.main`. See README.md > Render deploy.
+# `python -m workflows.main`, named to match WORKFLOW_NAME (default
+# "deep-agents"). See README.md > Deploy to Render.
 
 databases:
-  - name: langchain-workflows-db
-    databaseName: langchain_workflows
+  - name: deepagents-db
+    databaseName: deepagents
     plan: free
 
 services:
   - type: web
-    name: code-review-api
+    name: deepagents-api
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
@@ -20,13 +21,20 @@ services:
     envVars:
       - key: DATABASE_URL
         fromDatabase:
-          name: langchain-workflows-db
+          name: deepagents-db
           property: connectionString
+      # Size the pool to your Postgres plan's connection limit, divided across
+      # the web service + each Workflow instance. Free/Starter plans are small.
+      - key: DB_POOL_MAX_SIZE
+        value: "5"
+      # Must match the name of the Workflow you create in the Dashboard.
+      - key: WORKFLOW_NAME
+        value: deep-agents
       - key: OPENAI_API_KEY
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: RENDER_API_KEY
         sync: false
-      - key: REVIEW_API_KEY
+      - key: API_KEY
         sync: false

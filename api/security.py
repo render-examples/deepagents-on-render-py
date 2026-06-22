@@ -1,14 +1,10 @@
-"""API-key authentication for the review and trace endpoints.
+"""API-key authentication.
 
-Auth is enforced whenever the ``REVIEW_API_KEY`` environment variable
-is set. Callers must then present the key via the ``X-API-Key`` header
-(or an ``api_key`` query param, which the dashboard uses). If the
-variable is unset the API is open — convenient for local development,
-but a warning is logged at import time so it is never silently
-unauthenticated in production.
-
-The review endpoint triggers paid LLM/compute work and the trace
-endpoints expose submitted source code, so both must be guarded.
+Auth is enforced whenever ``API_KEY`` is set. Callers present the key via the
+``X-API-Key`` header (or ``Authorization: Bearer <key>``). If the variable is
+unset the API is open — convenient for local dev — but a warning is logged so
+it is never silently unauthenticated in production. The endpoints trigger paid
+LLM/compute work, so guard them in production.
 """
 
 from __future__ import annotations
@@ -21,12 +17,12 @@ from fastapi import HTTPException, Request, status
 
 logger = logging.getLogger(__name__)
 
-_API_KEY_ENV = "REVIEW_API_KEY"
+_API_KEY_ENV = "API_KEY"
 
 if not os.environ.get(_API_KEY_ENV):
     logger.warning(
-        "%s is not set — /reviews and trace APIs are UNAUTHENTICATED. "
-        "Set %s to require an X-API-Key header.",
+        "%s is not set — the API is UNAUTHENTICATED. Set %s to require an "
+        "X-API-Key header.",
         _API_KEY_ENV,
         _API_KEY_ENV,
     )

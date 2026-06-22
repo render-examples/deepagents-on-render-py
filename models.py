@@ -1,74 +1,81 @@
-"""Shared Pydantic models for the code review pipeline."""
+"""Shared Pydantic models — the request/response contract.
+
+The example domain is a *research report generator*, but none of these
+shapes are domain-specific in a way that matters: replace them when you
+swap in your own agents.
+"""
 
 from __future__ import annotations
 
-from enum import Enum
-from typing import Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-# Upper bound on a submitted diff (~256 KB). Large enough for real PRs,
-# small enough to cap LLM token spend and request memory.
-MAX_DIFF_CHARS = 256_000
+# Upper bound on a topic/instructions string. Keeps a single request from
+# pushing an unbounded prompt into the LLM (latency, memory, and cost).
+MAX_TOPIC_CHARS = 8_000
 
 
-class Severity(str, Enum):
-    critical = "critical"
-    high = "high"
-    medium = "medium"
-    low = "low"
+class RunRequest(BaseModel):
+    """Input to ``POST /run/{agent}``."""
+
+    topic: str = Field(min_length=1, max_length=MAX_TOPIC_CHARS)
+    thread_id: Optional[str] = Field(
+        default=None,
+        description="Optional caller-supplied thread id. One is generated if omitted.",
+    )
 
 
-class Assessment(str, Enum):
-    approve = "approve"
-    request_changes = "request_changes"
-    needs_discussion = "needs_discussion"
+class Decision(BaseModel):
+    """One human decision for an interrupted tool call.
 
-
-class ReviewRequest(BaseModel):
-    """Input to POST /reviews.
-
-    `diff` is bounded to keep a single request from pushing an
-    unbounded payload into the LLM (latency, memory, and cost).
+    Mirrors the LangGraph human-in-the-loop decision shape. ``type`` is the
+    action; ``message`` (reject/respond) and ``edited_action`` (edit) are
+    optional depending on the decision.
     """
 
-    diff: str = Field(min_length=1, max_length=MAX_DIFF_CHARS)
-    repo: str = Field(min_length=1, max_length=200)
-    context: dict = Field(default_factory=dict)
+    type: Literal["approve", "edit", "reject", "respond"]
+    message: Optional[str] = None
+    edited_action: Optional[dict[str, Any]] = None
 
 
-class Finding(BaseModel):
-    """A single issue found by a reviewer."""
+class ResumeRequest(BaseModel):
+    """Input to ``POST /resume/{thread_id}`` — one decision per pending action."""
 
-    file_path: str
-    line_number: Optional[int] = None
-    severity: Severity
-    category: str  # "security", "style", "logic"
-    description: str
+    decisions: list[Decision] = Field(min_length=1)
 
 
-class ReviewResult(BaseModel):
-    """Output from a single reviewer agent."""
+class ActionRequest(BaseModel):
+    """A pending tool call awaiting human review (subset of the interrupt payload)."""
 
-    reviewer: str  # "security", "style", "logic"
-    findings: list[Finding] = Field(default_factory=list)
+    name: str
+    args: dict[str, Any] = Field(default_factory=dict)
+    allowed_decisions: list[str] = Field(default_factory=list)
+
+
+class RunResponse(BaseModel):
+    """Output of ``/run`` and ``/resume``.
+
+    ``status`` is ``interrupted`` when the agent is paused for human review
+    (inspect ``action_requests`` and call ``/resume/{thread_id}``), or
+    ``completed`` when the run finished (inspect ``report`` / ``result``).
+    """
+
+    thread_id: str
+    status: Literal["interrupted", "completed"]
+    action_requests: list[ActionRequest] = Field(default_factory=list)
+    report: Optional["ResearchReport"] = None
+    result: Optional[str] = None
+
+
+class ResearchReport(BaseModel):
+    """The structured artifact the orchestrator publishes via ``publish_report``.
+
+    This is the structured result of the pipeline. It is persisted to Postgres
+    on approval so it survives restarts and is retrievable via ``GET /reports``.
+    """
+
+    title: str
     summary: str
-
-
-class FileSummary(BaseModel):
-    """Per-file breakdown in the final report."""
-
-    file_path: str
-    findings: list[Finding] = Field(default_factory=list)
-    summary: str
-
-
-class ReviewReport(BaseModel):
-    """Final output from the summarizer — the complete review."""
-
-    assessment: Assessment
-    summary: str
-    critical_findings: list[Finding] = Field(default_factory=list)
-    suggestions: list[Finding] = Field(default_factory=list)
-    file_summaries: list[FileSummary] = Field(default_factory=list)
-    reviewer_results: list[ReviewResult] = Field(default_factory=list)
+    body: str
+    sources: list[str] = Field(default_factory=list)

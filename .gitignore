@@ -1,38 +1,17 @@
+# Environment
+.env
+.venv/
+venv/
+
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-
-# Distribution / packaging
-dist/
-build/
 *.egg-info/
-*.egg
-
-# Virtual environments
-.venv/
-venv/
-env/
-
-# Environment variables
-.env
-.env.*
-!.env.example
-
-# IDE
-.vscode/
-.idea/
-
-# Testing
 .pytest_cache/
-.coverage
-htmlcov/
+.ruff_cache/
 .mypy_cache/
 
-# Docker
-docker-compose.override.yml
-
-# OS
+# OS / editor
 .DS_Store
-Thumbs.db
+.idea/
+.vscode/
