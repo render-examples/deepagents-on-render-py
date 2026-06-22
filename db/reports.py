@@ -23,8 +23,11 @@ CREATE TABLE IF NOT EXISTS reports (
     body        TEXT NOT NULL,
     sources     JSONB NOT NULL DEFAULT '[]'::jsonb,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS reports_thread_id_idx ON reports (thread_id);
+)
+"""
+
+_CREATE_INDEX = """
+CREATE INDEX IF NOT EXISTS reports_thread_id_idx ON reports (thread_id)
 """
 
 
@@ -41,9 +44,10 @@ def _require_pool() -> AsyncConnectionPool:
 
 
 async def init_reports() -> None:
-    """Create the reports table if it does not exist."""
+    """Create the reports table and index if they do not exist."""
     async with _require_pool().connection() as conn:
         await conn.execute(_CREATE_TABLE)
+        await conn.execute(_CREATE_INDEX)
 
 
 async def insert_report(
