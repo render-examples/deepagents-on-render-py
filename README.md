@@ -1,32 +1,34 @@
 # Deep Agents on Render (Python)
 
-A production scaffold for running [LangChain **Deep Agents**](https://docs.langchain.com/oss/python/deepagents/overview) on Render, with the two things Deep Agents doesn't give you out of the box:
+A production scaffold for running [LangChain **Deep Agents**](https://docs.langchain.com/oss/python/deepagents/overview) on Render. Deep Agents gives you the agent harness — planning, subagents, a `task` tool, human-in-the-loop. This repo adds the two pieces you need to run it for real, both backed by Render:
 
-- **Durable state** — every step of every run is checkpointed to **Render Postgres** via LangGraph's `AsyncPostgresSaver`. Runs survive restarts and work across replicas.
-- **Distributed execution** — when the orchestrator spawns a subagent (the built-in `task` tool), it runs as its own **Render Workflow** task — dedicated compute, retries, timeout, and plan — instead of in-process.
+- **Durable state on Render Postgres** — every step of a run is checkpointed with LangGraph's `AsyncPostgresSaver`. Runs survive restarts, work across replicas, and can pause for human approval and resume later.
+- **Distributed execution on Render Workflows** — when the agent spawns a subagent via the built-in `task` tool, it runs as its own Render Workflow task: dedicated compute, retries, timeout, and plan, instead of running in-process.
 
-It also wires up **human-in-the-loop**: the agent pauses for approval before publishing, holds its state in Postgres, and resumes on a later request — even if the process restarted in between.
-
-> **The example domain is not the point.** It's a small *research report generator* (an orchestrator + a `research-agent` + an `editor-agent`) that exists only to prove the scaffold works. Replace the agents in `agents/` with your own; you shouldn't need to touch the infrastructure code.
+The example agent is a small research-report generator (an orchestrator that delegates to a `research-agent` and an `editor-agent`), but the point is the wiring — swap in your own agents in `agents/`.
 
 ## How it works
 
 ```
 POST /run/research {topic}
   → FastAPI validates input + checks API key
-    → Orchestrator deep agent (Postgres checkpointer, thread_id)
+    → Orchestrator deep agent  (Postgres checkpointer, keyed by thread_id)
         → task(research-agent)  ─┐
-        → task(research-agent)   ├─ each dispatched as a Render Workflow task
-        → task(editor-agent)    ─┘   (its own instance / retries / plan)
+        → task(research-agent)   ├─ each runs as its own Render Workflow task
+        → task(editor-agent)    ─┘
         → publish_report(...)    ── human-in-the-loop interrupt ──► pauses
   → returns {status: "interrupted", action_requests: [...]}
 
 POST /resume/{thread_id} {decisions: [{type: "approve"}]}
-  → resumes from the Postgres checkpoint, runs publish_report
-  → report persisted to Postgres; returns {status: "completed", report}
+  → resumes from the Postgres checkpoint and runs publish_report
+  → returns {status: "completed", report}
 ```
 
-The integration hook is small and lives in one file: [`dispatch/workflow_subagent.py`](dispatch/workflow_subagent.py) registers each subagent as a `CompiledSubAgent` whose runnable dispatches to `RenderAsync().workflows.run_task(...)`. When `RENDER_API_KEY` is not set (local dev, tests), it transparently falls back to running the subagent in-process — so the same graph runs end-to-end with zero infrastructure.
+### The two integrations
+
+**Render Workflows as the subagent backend.** The hook is small and lives in one file: [`dispatch/workflow_subagent.py`](dispatch/workflow_subagent.py) registers each subagent as a `CompiledSubAgent` whose runnable dispatches to `RenderAsync().workflows.run_task(...)`. So when the agent calls `task`, the subagent runs on a Render Workflow instead of in-process. When `RENDER_API_KEY` is unset (local dev, tests), it falls back to running the subagent in-process — the same agent graph runs end-to-end with zero infrastructure.
+
+**Render Postgres as the checkpointer.** [`checkpoint/postgres.py`](checkpoint/postgres.py) builds an `AsyncPostgresSaver` over a single connection pool sized to your Postgres plan. The orchestrator runs in the web service (not as a Workflow) so it can pause on an `interrupt_on` tool, persist its state to Postgres, and resume on a later request — even if the process restarted in between.
 
 ## Repository structure
 
@@ -65,7 +67,7 @@ Copy `.env.example` to `.env` and fill in values. See that file for the full lis
 |----------|----------|---------|
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | One of them | Model provider. Anthropic wins if both set (override with `LLM_PROVIDER`). |
 | `DATABASE_URL` | Yes | Postgres for the checkpointer + report store. Injected by Render in prod. |
-| `DB_POOL_MAX_SIZE` | Recommended | Pool size — set to your Postgres plan's connection limit / number of instances. |
+| `DB_POOL_MAX_SIZE` | Recommended | Pool size. Keep `(web instances + workflow instances) × DB_POOL_MAX_SIZE` under your Postgres plan's connection limit. |
 | `RENDER_API_KEY` | Prod | Enables Workflow dispatch. When unset, subagents run in-process. |
 | `WORKFLOW_NAME` | Prod | Name of your Dashboard Workflow; tasks are addressed as `<WORKFLOW_NAME>/research_agent`. |
 | `API_KEY` | Recommended | When set, all endpoints require it via `X-API-Key`. |
@@ -99,7 +101,7 @@ curl -X POST http://localhost:8000/resume/<thread_id> \
 # → {"thread_id": "...", "status": "completed", "report": {...}}
 ```
 
-To verify durability (R3): stop the server after step 1 and start it again before step 2 — `/resume` still works, because the interrupted state lives in Postgres.
+Because the interrupted state lives in Postgres, you can stop the server after step 1 and restart it before step 2 — `/resume` still works.
 
 Run the tests:
 
@@ -118,7 +120,7 @@ docker compose up --build       # API at http://localhost:8000
 
 ## Deploy to Render
 
-Render Workflows and the web service deploy through two complementary mechanisms.
+The web service and the Workflows service deploy through two complementary mechanisms.
 
 ### 1. Web service + database (Blueprint)
 
@@ -126,7 +128,7 @@ Render Workflows and the web service deploy through two complementary mechanisms
 
 ### 2. Workflows service (Dashboard)
 
-> Render Workflows are **not yet supported in Blueprints** — create the Workflow from the Dashboard.
+> Render Workflows are not yet supported in Blueprints — create the Workflow from the Dashboard.
 
 In the Dashboard: **New → Workflow**, link this repo, then configure:
 
@@ -139,29 +141,13 @@ In the Dashboard: **New → Workflow**, link this repo, then configure:
 
 Add the same model key and `DATABASE_URL`. Click **Deploy Workflow** — Render registers `research_agent` and `editor_agent` during the build. Once both services are live, set `RENDER_API_KEY` on the web service so the orchestrator dispatches subagents to `deep-agents/research_agent` and `deep-agents/editor_agent`.
 
-**Pool sizing (R4):** set `DB_POOL_MAX_SIZE` so that `web instances + workflow instances` × `DB_POOL_MAX_SIZE` stays under your Postgres plan's connection limit.
-
 ## Add your own agent
 
-This scaffold is designed so you replace the example agents without touching infrastructure:
+Replace the example agents without touching the infrastructure:
 
 1. **Define a subagent** in `agents/subagents.py` — a `SubAgentSpec` with a name, description, system prompt, and optional tools.
-2. **Register it** in `agents/orchestrator.py`: add `workflow_subagent(MY_AGENT)` to the `subagents=[...]` list and mention it in the system prompt.
+2. **Register it** in `agents/orchestrator.py`: add `workflow_subagent(MY_AGENT)` to `subagents=[...]` and mention it in the system prompt.
 3. **Expose it as a Workflow task** in `workflows/research/tasks.py` (or a new `workflows/<domain>/`): a one-line `@app.task` that calls `run_subagent_sync(MY_AGENT, task)`. The task function name must match the subagent name with underscores (`my-agent` → `my_agent`).
-4. **Customize the gate** (optional): change `interrupt_on` in `agents/orchestrator.py` to pause on whichever tools you want a human to approve.
+4. **Customize the gate** (optional): change `interrupt_on` in `agents/orchestrator.py` to pause on whichever tools need human approval.
 
-Everything else — checkpointing, pooling, dispatch, the API, auth — stays the same.
-
-## How the requirements are met
-
-| # | Requirement | Where |
-|---|-------------|-------|
-| R1 | Postgres checkpointing via `AsyncPostgresSaver` from `DATABASE_URL` | `checkpoint/postgres.py`, `api/app.py` |
-| R2 | Subagent dispatch via Render Workflows, not in-process | `dispatch/workflow_subagent.py`, `workflows/research/tasks.py` |
-| R3 | Human-in-the-loop with `interrupt_on`; state in Postgres; resume after restart | `agents/orchestrator.py`, `api/routes/runs.py` |
-| R4 | Connection pooling sized to the plan | `checkpoint/postgres.py` (`DB_POOL_MAX_SIZE`) |
-| R5 | `render.yaml` provisions web + Postgres (Workflows via Dashboard) | `render.yaml` |
-| R6 | 1 orchestrator + 2 subagents; `POST /run/{agent}` returns a structured result | `agents/`, `api/routes/runs.py`, `models.py` |
-| R7 | Fork-and-customize without touching infra | `agents/` + "Add your own agent" above |
-| R8 | `.env.example` documents all variables | `.env.example` |
-| R9 | README: local dev, Render deploy, add-your-own-agent | this file |
+Checkpointing, pooling, dispatch, the API, and auth all stay the same.
